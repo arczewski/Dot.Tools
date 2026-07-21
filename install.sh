@@ -32,7 +32,8 @@ venv_python="${venv_path}/bin/python"
 for requirements_file in \
   "${repository_root}/DotMcp.IO/requirements.txt" \
   "${repository_root}/DotMcp.Fetch/requirements.txt" \
-  "${repository_root}/DotMcp.Terminal/requirements.txt"; do
+  "${repository_root}/DotMcp.Terminal/requirements.txt" \
+  "${repository_root}/DotMcp.Caldav/requirements.txt"; do
   "${venv_python}" -m pip install --requirement "${requirements_file}"
 done
 
