@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
@@ -13,6 +14,7 @@ import caldav
 from caldav.calendarobjectresource import CalendarObjectResource
 from caldav.collection import Calendar
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_http_request
 from icalendar import Calendar as ICalendar
 
 mcp = FastMCP("DotMcp.Caldav")
@@ -34,6 +36,45 @@ _COMPONENT_METHODS = {
     "VTODO": "add_todo",
     "VJOURNAL": "add_journal",
 }
+_CALDAV_URL_HEADER = "X-CalDAV-URL"
+_CALDAV_USERNAME_HEADER = "X-CalDAV-Username"
+_CALDAV_PASSWORD_HEADER = "X-CalDAV-Password"
+
+
+@dataclass(frozen=True)
+class CalDAVConnection:
+    """Per-request CalDAV connection data obtained from HTTP headers."""
+
+    server_url: str
+    username: str
+    password: str
+
+
+def _connection_from_headers(headers: Mapping[str, str]) -> CalDAVConnection:
+    values = {
+        _CALDAV_URL_HEADER: headers.get(_CALDAV_URL_HEADER),
+        _CALDAV_USERNAME_HEADER: headers.get(_CALDAV_USERNAME_HEADER),
+        _CALDAV_PASSWORD_HEADER: headers.get(_CALDAV_PASSWORD_HEADER),
+    }
+    missing_headers = [name for name, value in values.items() if not value]
+    if missing_headers:
+        raise ValueError(f"Missing required CalDAV request header(s): {', '.join(missing_headers)}.")
+
+    return CalDAVConnection(
+        server_url=values[_CALDAV_URL_HEADER],
+        username=values[_CALDAV_USERNAME_HEADER],
+        password=values[_CALDAV_PASSWORD_HEADER],
+    )
+
+
+def _connection_from_request_headers() -> CalDAVConnection:
+    try:
+        request = get_http_request()
+    except RuntimeError as error:
+        raise RuntimeError(
+            "CalDAV connection headers are available only through an HTTP MCP transport."
+        ) from error
+    return _connection_from_headers(request.headers)
 
 
 def _validate_url(value: str, parameter_name: str, allow_insecure_http: bool = False) -> None:
@@ -71,7 +112,7 @@ def _validate_resource_url(
 ) -> None:
     _validate_url(value, parameter_name, allow_insecure_http)
     if _origin(value) != _origin(server_url):
-        raise ValueError(f"{parameter_name} must use the same origin as serverUrl.")
+        raise ValueError(f"{parameter_name} must use the same origin as the CalDAV server URL.")
 
 
 def _parse_date_or_datetime(value: str | None, parameter_name: str) -> date | datetime | None:
@@ -146,12 +187,13 @@ def _ensure_success(response: Any, operation: str) -> None:
         raise RuntimeError(f"{operation} failed with HTTP status {rendered_status}.")
 
 
-def _error_result(error: Exception, username: str, password: str) -> dict[str, str]:
-    """Return a useful failure without reflecting supplied credentials."""
+def _error_result(error: Exception, connection: CalDAVConnection | None = None) -> dict[str, str]:
+    """Return a useful failure without reflecting request-supplied credentials."""
     detail = str(error).strip()
-    for secret in (password, username):
-        if secret:
-            detail = detail.replace(secret, "[REDACTED]")
+    if connection is not None:
+        for secret in (connection.password, connection.username):
+            if secret:
+                detail = detail.replace(secret, "[REDACTED]")
     if not detail:
         detail = "The CalDAV server did not provide an error message."
     return {"error": f"{type(error).__name__}: {detail[:500]}"}
@@ -165,7 +207,7 @@ def _client(
     verify_ssl: bool,
     allow_insecure_http: bool,
 ) -> Iterator[caldav.DAVClient]:
-    _validate_url(server_url, "serverUrl", allow_insecure_http)
+    _validate_url(server_url, _CALDAV_URL_HEADER, allow_insecure_http)
     if not username:
         raise ValueError("username is required.")
     if not password:
@@ -283,66 +325,83 @@ def _object_summary(calendar_object: CalendarObjectResource, include_data: bool)
 
 @mcp.tool(name="CheckCalDAVConnection")
 def check_caldav_connection(
-    serverUrl: str,
-    username: str,
-    password: str,
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, Any]:
-    """Verify one CalDAV login and report the server's DAV, CalDAV, and scheduling capabilities.
+    """Verify the CalDAV login supplied in the request headers.
 
-    Credentials are accepted for this call only and are never stored by this MCP server.
+    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers. Header values are used
+    for this request only and are never stored by this MCP server.
     """
+    connection: CalDAVConnection | None = None
     try:
-        with _client(serverUrl, username, password, verifySsl, allowInsecureHttp) as client:
+        connection = _connection_from_request_headers()
+        with _client(
+            connection.server_url,
+            connection.username,
+            connection.password,
+            verifySsl,
+            allowInsecureHttp,
+        ) as client:
             return {
                 "dav": client.supports_dav(),
                 "caldav": client.supports_caldav(),
                 "scheduling": client.supports_scheduling(),
             }
     except Exception as error:  # pragma: no cover - network and remote server dependent
-        return _error_result(error, username, password)
+        return _error_result(error, connection)
 
 
 @mcp.tool(name="ListCalendars")
 def list_calendars(
-    serverUrl: str,
-    username: str,
-    password: str,
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> list[dict[str, Any]] | dict[str, str]:
-    """List calendars accessible to this login, including each calendar URL required by the other tools.
+    """List calendars for the CalDAV login supplied in the request headers.
 
-    Credentials are accepted for this call only and are never stored by this MCP server.
+    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers. Header values are used
+    for this request only and are never stored by this MCP server.
     """
+    connection: CalDAVConnection | None = None
     try:
-        with _client(serverUrl, username, password, verifySsl, allowInsecureHttp) as client:
+        connection = _connection_from_request_headers()
+        with _client(
+            connection.server_url,
+            connection.username,
+            connection.password,
+            verifySsl,
+            allowInsecureHttp,
+        ) as client:
             return [
                 {"url": str(calendar.url), "name": _calendar_name(calendar)}
                 for calendar in client.get_calendars()
             ]
     except Exception as error:  # pragma: no cover - network and remote server dependent
-        return _error_result(error, username, password)
+        return _error_result(error, connection)
 
 
 @mcp.tool(name="CreateCalendar")
 def create_calendar(
-    serverUrl: str,
-    username: str,
-    password: str,
     name: str,
     supportedComponents: list[str] | None = None,
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, Any]:
-    """Create a calendar owned by the authenticated user and return its URL.
+    """Create a calendar owned by the user identified by the request headers.
 
     Set supportedComponents, such as ["VTODO"], only when a server needs an explicit component set.
-    Credentials are accepted for this call only and are never stored by this MCP server.
+    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers.
     """
+    connection: CalDAVConnection | None = None
     try:
-        with _client(serverUrl, username, password, verifySsl, allowInsecureHttp) as client:
+        connection = _connection_from_request_headers()
+        with _client(
+            connection.server_url,
+            connection.username,
+            connection.password,
+            verifySsl,
+            allowInsecureHttp,
+        ) as client:
             principal = client.get_principal()
             calendar = principal.make_calendar(
                 name=name,
@@ -350,14 +409,11 @@ def create_calendar(
             )
             return {"url": str(calendar.url), "name": _calendar_name(calendar)}
     except Exception as error:  # pragma: no cover - network and remote server dependent
-        return _error_result(error, username, password)
+        return _error_result(error, connection)
 
 
 @mcp.tool(name="SearchCalendarObjects")
 def search_calendar_objects(
-    serverUrl: str,
-    username: str,
-    password: str,
     calendarUrl: str,
     componentType: str = "VEVENT",
     start: str | None = None,
@@ -369,14 +425,14 @@ def search_calendar_objects(
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> list[dict[str, Any]] | dict[str, str]:
-    """Search VEVENT, VTODO, or VJOURNAL objects in a calendar.
+    """Search VEVENT, VTODO, or VJOURNAL objects using the CalDAV request headers.
 
-    start and end are required ISO 8601 dates or date-times and must fit within the configured range.
-    Recurrence expansion operates within those bounds. Set includeCalendarData only when the raw
-    iCalendar payload is needed. Credentials are accepted for this call only and are never stored by
-    this MCP server.
+    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers. start and end are
+    required ISO 8601 dates or date-times and must fit within the configured range.
     """
+    connection: CalDAVConnection | None = None
     try:
+        connection = _connection_from_request_headers()
         component_type = _component_type(componentType)
         if maxResults < 1:
             raise ValueError("maxResults must be at least 1.")
@@ -409,87 +465,108 @@ def search_calendar_objects(
         if summaryContains:
             search_args["summary"] = summaryContains
 
-        with _client(serverUrl, username, password, verifySsl, allowInsecureHttp) as client:
-            calendar = _calendar(client, serverUrl, calendarUrl, allowInsecureHttp)
+        with _client(
+            connection.server_url,
+            connection.username,
+            connection.password,
+            verifySsl,
+            allowInsecureHttp,
+        ) as client:
+            calendar = _calendar(client, connection.server_url, calendarUrl, allowInsecureHttp)
             results = _search_in_windows(calendar, search_args, start_value, end_value, maxResults)
             return [_object_summary(result, includeCalendarData) for result in results]
     except Exception as error:  # pragma: no cover - network and remote server dependent
-        return _error_result(error, username, password)
+        return _error_result(error, connection)
 
 
 @mcp.tool(name="GetCalendarObject")
 def get_calendar_object(
-    serverUrl: str,
-    username: str,
-    password: str,
     objectUrl: str,
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, Any]:
-    """Retrieve one calendar object by its URL and return its complete raw iCalendar data.
+    """Retrieve one calendar object by URL using the CalDAV request headers.
 
-    Credentials are accepted for this call only and are never stored by this MCP server.
+    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers.
     """
+    connection: CalDAVConnection | None = None
     try:
-        _validate_resource_url(objectUrl, "objectUrl", serverUrl, allowInsecureHttp)
-        with _client(serverUrl, username, password, verifySsl, allowInsecureHttp) as client:
+        connection = _connection_from_request_headers()
+        _validate_resource_url(objectUrl, "objectUrl", connection.server_url, allowInsecureHttp)
+        with _client(
+            connection.server_url,
+            connection.username,
+            connection.password,
+            verifySsl,
+            allowInsecureHttp,
+        ) as client:
             calendar_object = CalendarObjectResource(client=client, url=objectUrl)
             calendar_object.load()
             result = _object_summary(calendar_object, include_data=True)
             return result
     except Exception as error:  # pragma: no cover - network and remote server dependent
-        return _error_result(error, username, password)
+        return _error_result(error, connection)
 
 
 @mcp.tool(name="CreateCalendarObject")
 def create_calendar_object(
-    serverUrl: str,
-    username: str,
-    password: str,
     calendarUrl: str,
     icalendarData: str,
     componentType: str = "VEVENT",
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, Any]:
-    """Create a VEVENT, VTODO, or VJOURNAL from a complete VCALENDAR/iCalendar payload.
+    """Create a VEVENT, VTODO, or VJOURNAL using the CalDAV request headers.
 
-    All non-timezone calendar components must match componentType and share one UID. Credentials are
-    accepted for this call only and are never stored by this MCP server.
+    All non-timezone calendar components must match componentType and share one UID. Requires
+    X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers.
     """
+    connection: CalDAVConnection | None = None
     try:
+        connection = _connection_from_request_headers()
         component_type = _component_type(componentType)
         _validate_icalendar_data(icalendarData, component_type)
 
-        with _client(serverUrl, username, password, verifySsl, allowInsecureHttp) as client:
-            calendar = _calendar(client, serverUrl, calendarUrl, allowInsecureHttp)
+        with _client(
+            connection.server_url,
+            connection.username,
+            connection.password,
+            verifySsl,
+            allowInsecureHttp,
+        ) as client:
+            calendar = _calendar(client, connection.server_url, calendarUrl, allowInsecureHttp)
             method = getattr(calendar, _COMPONENT_METHODS[component_type])
             created = method(icalendarData)
             return _object_summary(created, include_data=False)
     except Exception as error:  # pragma: no cover - network and remote server dependent
-        return _error_result(error, username, password)
+        return _error_result(error, connection)
 
 
 @mcp.tool(name="UpdateCalendarObject")
 def update_calendar_object(
-    serverUrl: str,
-    username: str,
-    password: str,
     objectUrl: str,
     icalendarData: str,
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, str]:
-    """Replace an existing calendar object's raw iCalendar data at objectUrl.
+    """Replace one calendar object's raw iCalendar data using the CalDAV request headers.
 
-    Preserve the calendar object's UID and component type when updating. Credentials are accepted for
-    this call only and are never stored by this MCP server.
+    Preserve the calendar object's UID and component type when updating. Requires X-CalDAV-URL,
+    X-CalDAV-Username, and X-CalDAV-Password headers.
     """
+    connection: CalDAVConnection | None = None
     try:
-        _validate_resource_url(objectUrl, "objectUrl", serverUrl, allowInsecureHttp)
+        connection = _connection_from_request_headers()
+        _validate_resource_url(objectUrl, "objectUrl", connection.server_url, allowInsecureHttp)
         _validate_icalendar_data(icalendarData)
 
-        with _client(serverUrl, username, password, verifySsl, allowInsecureHttp) as client:
+        with _client(
+            connection.server_url,
+            connection.username,
+            connection.password,
+            verifySsl,
+            allowInsecureHttp,
+        ) as client:
             response = client.put(
                 objectUrl,
                 icalendarData,
@@ -498,31 +575,52 @@ def update_calendar_object(
             _ensure_success(response, "UpdateCalendarObject")
             return {"url": objectUrl, "status": "updated"}
     except Exception as error:  # pragma: no cover - network and remote server dependent
-        return _error_result(error, username, password)
+        return _error_result(error, connection)
 
 
 @mcp.tool(name="DeleteCalendarObject")
 def delete_calendar_object(
-    serverUrl: str,
-    username: str,
-    password: str,
     objectUrl: str,
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, str]:
-    """Delete one calendar object by URL.
+    """Delete one calendar object by URL using the CalDAV request headers.
 
-    Credentials are accepted for this call only and are never stored by this MCP server.
+    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers.
     """
+    connection: CalDAVConnection | None = None
     try:
-        _validate_resource_url(objectUrl, "objectUrl", serverUrl, allowInsecureHttp)
-        with _client(serverUrl, username, password, verifySsl, allowInsecureHttp) as client:
+        connection = _connection_from_request_headers()
+        _validate_resource_url(objectUrl, "objectUrl", connection.server_url, allowInsecureHttp)
+        with _client(
+            connection.server_url,
+            connection.username,
+            connection.password,
+            verifySsl,
+            allowInsecureHttp,
+        ) as client:
             response = client.delete(objectUrl)
             _ensure_success(response, "DeleteCalendarObject")
             return {"url": objectUrl, "status": "deleted"}
     except Exception as error:  # pragma: no cover - network and remote server dependent
-        return _error_result(error, username, password)
+        return _error_result(error, connection)
+
+
+def _run_server() -> None:
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    if transport == "stdio":
+        mcp.run(transport=transport)
+        return
+    if transport not in {"http", "sse", "streamable-http"}:
+        raise ValueError("MCP_TRANSPORT must be stdio, http, sse, or streamable-http.")
+
+    mcp.run(
+        transport=transport,
+        host=os.getenv("MCP_HOST", "127.0.0.1"),
+        port=_int_env("MCP_PORT", 8000),
+        path=os.getenv("MCP_PATH", "/mcp"),
+    )
 
 
 if __name__ == "__main__":
-    mcp.run()
+    _run_server()

@@ -1,6 +1,6 @@
 # Dot.Tools MCP servers
 
-`Dot.Tools` provides five local stdio [Model Context Protocol (MCP)] servers:
+`Dot.Tools` provides four local stdio [Model Context Protocol (MCP)] servers and one header-authenticated CalDAV HTTP connector:
 
 | Server | Purpose | Runtime |
 | --- | --- | --- |
@@ -8,7 +8,7 @@
 | `dotmcp-io` | List, read, search, and edit files. | Python / FastMCP |
 | `dotmcp-fetch` | Fetch web content and query a SearXNG instance. | Python / FastMCP |
 | `dotmcp-terminal` | Execute commands through the host-native shell. | Python / FastMCP |
-| `dotmcp-caldav` | Connect to arbitrary CalDAV servers using credentials supplied to each tool call. | Python / FastMCP |
+| `dotmcp-caldav` | Connect to arbitrary CalDAV servers using credentials supplied in MCP HTTP headers. | Python / FastMCP |
 
 ## Quick start (Linux/macOS)
 
@@ -41,11 +41,11 @@ PYTHON_BIN=/path/to/python3.12 bash ./install.sh
 
 ## Configure your MCP harness
 
-Load the repository-root [`mcp.json`](./mcp.json) in your MCP harness. It defines all five servers and runs them over standard input/output.
+Load the repository-root [`mcp.json`](./mcp.json) in your MCP harness. It defines four local stdio servers plus a Streamable HTTP connection to `dotmcp-caldav` at `http://127.0.0.1:8000/mcp`.
 
-The paths in `mcp.json` are relative to the repository root, and each entry sets `cwd` to `.`. Configure the harness to start these entries from the cloned repository directory, or replace `cwd` and the relative paths with that clone’s absolute path if the harness does not resolve configuration-relative paths.
+The paths in `mcp.json` are relative to the repository root and apply to the four stdio entries. Configure the harness to start those entries from the cloned repository directory, or replace `cwd` and the relative paths with that clone’s absolute path if the harness does not resolve configuration-relative paths.
 
-The Assembly entry uses `dotnet run`, so its first launch restores and builds the .NET project. The four Python entries run through `.venv/bin/python`, which is created by `install.sh`.
+The Assembly entry uses `dotnet run`, so its first launch restores and builds the .NET project. The three local Python entries run through `.venv/bin/python`, which is created by `install.sh`. Launch the CalDAV HTTP server separately as described below.
 
 ## Fetch server configuration
 
@@ -63,9 +63,21 @@ The Assembly entry uses `dotnet run`, so its first launch restores and builds th
 
 ## CalDAV server configuration
 
-`dotmcp-caldav` is a general connector for CalDAV servers. Every CalDAV tool call requires `serverUrl`, `username`, and `password`; the server creates a new client for that call, closes it afterward, and never reads or persists credentials from `mcp.json`, environment variables, or files. Start with `CheckCalDAVConnection`, use `ListCalendars` to obtain a calendar URL, then search, retrieve, create, update, or delete VEVENT, VTODO, and VJOURNAL objects. Calendar and object URLs must use the same origin as `serverUrl`; use the server's canonical endpoint because redirects are rejected.
+`dotmcp-caldav` is a general connector for CalDAV servers. It reads connection data from these incoming MCP HTTP headers on every tool call, creates a client for that call, and closes it afterward. Credentials are never exposed as tool parameters, read from files, or persisted by the server:
 
-HTTPS endpoints are required by default. TLS certificate verification is enabled by default through `verifySsl`; disable it only for a known self-signed server. For a trusted legacy or local HTTP endpoint, explicitly set `allowInsecureHttp` to `true` on every relevant tool call. The optional harness environment variables control non-secret limits:
+| Header | Value |
+| --- | --- |
+| `X-CalDAV-URL` | CalDAV server URL. |
+| `X-CalDAV-Username` | CalDAV username. |
+| `X-CalDAV-Password` | CalDAV password or app password. |
+
+The repository [`mcp.json`](./mcp.json) is a client configuration template: render or replace `{{CALDAV_URL}}`, `{{CALDAV_USERNAME}}`, and `{{CALDAV_PASSWORD}}` with your MCP harness's supported secret-substitution mechanism before loading it. If the URL placeholder remains unresolved, the connector rejects it before creating a network client. The template targets a local Streamable HTTP server at `http://127.0.0.1:8000/mcp`; launch it before connecting with `MCP_TRANSPORT=streamable-http .venv/bin/python DotMcp.Caldav/server.py`.
+
+The default server binding is loopback-only. Do not expose this credential-bearing HTTP endpoint directly on a network. For a remote deployment, terminate HTTPS at a trusted reverse proxy, preserve the three `X-CalDAV-*` headers only on the protected hop, and configure `MCP_HOST`, `MCP_PORT`, and `MCP_PATH` to match that deployment.
+
+Start with `CheckCalDAVConnection`, use `ListCalendars` to obtain a calendar URL, then search, retrieve, create, update, or delete VEVENT, VTODO, and VJOURNAL objects. Calendar and object URLs must use the same origin as the `X-CalDAV-URL` value; use the server's canonical endpoint because redirects are rejected.
+
+HTTPS CalDAV endpoints are required by default. TLS certificate verification is enabled by default through `verifySsl`; disable it only for a known self-signed server. For a trusted legacy or local HTTP endpoint, explicitly set `allowInsecureHttp` to `true` on every relevant tool call. The optional server environment variables control non-secret limits:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -78,4 +90,4 @@ HTTPS endpoints are required by default. TLS certificate verification is enabled
 
 - The Terminal server executes commands with the privileges of the MCP harness process. Only enable it for trusted MCP clients and repositories.
 - The Assembly server’s Docker usage is documented in [`DotMcp.Assembly/README.md`](./DotMcp.Assembly/README.md).
-- `mcp.json` targets Linux/macOS because it invokes `.venv/bin/python`. Windows users can create a Windows-specific config using `.venv\\Scripts\\python.exe`.
+- `mcp.json` contains four local stdio servers that invoke `.venv/bin/python`; the CalDAV entry is an HTTP client configuration for `http://127.0.0.1:8000/mcp`. Windows users can create a Windows-specific config using `.venv\\Scripts\\python.exe` for the local Python entries.
