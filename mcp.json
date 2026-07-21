@@ -1,0 +1,30 @@
+{
+  "mcpServers": {
+    "dotmcp-assembly": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "DotMcp.Assembly/DotMcp.Assembly.csproj",
+        "--configuration",
+        "Release"
+      ],
+      "cwd": "."
+    },
+    "dotmcp-io": {
+      "command": ".venv/bin/python",
+      "args": ["DotMcp.IO/server.py"],
+      "cwd": "."
+    },
+    "dotmcp-fetch": {
+      "command": ".venv/bin/python",
+      "args": ["DotMcp.Fetch/server.py"],
+      "cwd": "."
+    },
+    "dotmcp-terminal": {
+      "command": ".venv/bin/python",
+      "args": ["DotMcp.Terminal/server.py"],
+      "cwd": "."
+    }
+  }
+}
