@@ -1,6 +1,6 @@
 # Dot.Tools MCP servers
 
-`Dot.Tools` provides four local stdio [Model Context Protocol (MCP)] servers and one header-authenticated CalDAV HTTP connector:
+`Dot.Tools` provides five local stdio [Model Context Protocol (MCP)] servers:
 
 | Server | Purpose | Runtime |
 | --- | --- | --- |
@@ -8,7 +8,7 @@
 | `dotmcp-io` | List, read, search, and edit files. | Python / FastMCP |
 | `dotmcp-fetch` | Fetch web content and query a SearXNG instance. | Python / FastMCP |
 | `dotmcp-terminal` | Execute commands through the host-native shell. | Python / FastMCP |
-| `dotmcp-caldav` | Connect to arbitrary CalDAV servers using credentials supplied in MCP HTTP headers. | Python / FastMCP |
+| `dotmcp-caldav` | Connect to arbitrary CalDAV servers using `CALDAV_*` environment variables. | Python / FastMCP |
 
 ## Quick start (Linux/macOS)
 
@@ -41,11 +41,11 @@ PYTHON_BIN=/path/to/python3.12 bash ./install.sh
 
 ## Configure your MCP harness
 
-Load the repository-root [`mcp.json`](./mcp.json) in your MCP harness. It defines four local stdio servers plus a Streamable HTTP connection to `dotmcp-caldav` at `http://127.0.0.1:8000/mcp`.
+Load the repository-root [`mcp.json`](./mcp.json) in your MCP harness. It defines all five local stdio servers and runs them over standard input/output.
 
-The paths in `mcp.json` are relative to the repository root and apply to the four stdio entries. Configure the harness to start those entries from the cloned repository directory, or replace `cwd` and the relative paths with that clone’s absolute path if the harness does not resolve configuration-relative paths.
+The paths in `mcp.json` are relative to the repository root, and each entry sets `cwd` to `.`. Configure the harness to start these entries from the cloned repository directory, or replace `cwd` and the relative paths with that clone’s absolute path if the harness does not resolve configuration-relative paths.
 
-The Assembly entry uses `dotnet run`, so its first launch restores and builds the .NET project. The three local Python entries run through `.venv/bin/python`, which is created by `install.sh`. Launch the CalDAV HTTP server separately as described below.
+The Assembly entry uses `dotnet run`, so its first launch restores and builds the .NET project. The four Python entries run through `.venv/bin/python`, which is created by `install.sh`.
 
 ## Fetch server configuration
 
@@ -63,21 +63,19 @@ The Assembly entry uses `dotnet run`, so its first launch restores and builds th
 
 ## CalDAV server configuration
 
-`dotmcp-caldav` is a general connector for CalDAV servers. It reads connection data from these incoming MCP HTTP headers on every tool call, creates a client for that call, and closes it afterward. Credentials are never exposed as tool parameters, read from files, or persisted by the server:
+`dotmcp-caldav` is a general connector for CalDAV servers. It reads connection data from the MCP server process environment when each tool runs, creates a client for that call, and closes it afterward. Credentials are never exposed as tool parameters or persisted by the server.
 
-| Header | Value |
+| Variable | Purpose |
 | --- | --- |
-| `X-CalDAV-URL` | CalDAV server URL. |
-| `X-CalDAV-Username` | CalDAV username. |
-| `X-CalDAV-Password` | CalDAV password or app password. |
+| `CALDAV_URL` | CalDAV server URL. |
+| `CALDAV_USERNAME` | CalDAV username. |
+| `CALDAV_PASSWORD` | CalDAV password or app password. |
 
-The repository [`mcp.json`](./mcp.json) is a client configuration template: render or replace `{{CALDAV_URL}}`, `{{CALDAV_USERNAME}}`, and `{{CALDAV_PASSWORD}}` with your MCP harness's supported secret-substitution mechanism before loading it. If the URL placeholder remains unresolved, the connector rejects it before creating a network client. The template targets a local Streamable HTTP server at `http://127.0.0.1:8000/mcp`; launch it before connecting with `MCP_TRANSPORT=streamable-http .venv/bin/python DotMcp.Caldav/server.py`.
+The repository [`mcp.json`](./mcp.json) defines these variables on the `dotmcp-caldav` process with the requested template values: `{{CALDAV_URL}}`, `{{CALDAV_USERNAME}}`, and `{{CALDAV_PASSWORD}}`. Render or replace these templates using your MCP harness's supported secret-substitution mechanism before loading the configuration. The server rejects missing variables and unresolved or invalid URLs before creating a network client.
 
-The default server binding is loopback-only. Do not expose this credential-bearing HTTP endpoint directly on a network. For a remote deployment, terminate HTTPS at a trusted reverse proxy, preserve the three `X-CalDAV-*` headers only on the protected hop, and configure `MCP_HOST`, `MCP_PORT`, and `MCP_PATH` to match that deployment.
+Start with `CheckCalDAVConnection`, use `ListCalendars` to obtain a calendar URL, then search, retrieve, create, update, or delete VEVENT, VTODO, and VJOURNAL objects. Calendar and object URLs must use the same origin as `CALDAV_URL`; use the server's canonical endpoint because redirects are rejected.
 
-Start with `CheckCalDAVConnection`, use `ListCalendars` to obtain a calendar URL, then search, retrieve, create, update, or delete VEVENT, VTODO, and VJOURNAL objects. Calendar and object URLs must use the same origin as the `X-CalDAV-URL` value; use the server's canonical endpoint because redirects are rejected.
-
-HTTPS CalDAV endpoints are required by default. TLS certificate verification is enabled by default through `verifySsl`; disable it only for a known self-signed server. For a trusted legacy or local HTTP endpoint, explicitly set `allowInsecureHttp` to `true` on every relevant tool call. The optional server environment variables control non-secret limits:
+HTTPS CalDAV endpoints are required by default. TLS certificate verification is enabled by default through `verifySsl`; disable it only for a known self-signed server. For a trusted legacy or local HTTP endpoint, explicitly set `allowInsecureHttp` to `true` on every relevant tool call. The optional non-secret server environment variables control limits:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -90,4 +88,4 @@ HTTPS CalDAV endpoints are required by default. TLS certificate verification is 
 
 - The Terminal server executes commands with the privileges of the MCP harness process. Only enable it for trusted MCP clients and repositories.
 - The Assembly server’s Docker usage is documented in [`DotMcp.Assembly/README.md`](./DotMcp.Assembly/README.md).
-- `mcp.json` contains four local stdio servers that invoke `.venv/bin/python`; the CalDAV entry is an HTTP client configuration for `http://127.0.0.1:8000/mcp`. Windows users can create a Windows-specific config using `.venv\\Scripts\\python.exe` for the local Python entries.
+- `mcp.json` invokes `.venv/bin/python` for all four Python servers, including CalDAV. Windows users can create a Windows-specific config using `.venv\\Scripts\\python.exe`.
