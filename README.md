@@ -1,6 +1,6 @@
 # Dot.Tools MCP servers
 
-`Dot.Tools` provides four local stdio [Model Context Protocol (MCP)] servers:
+`Dot.Tools` provides five local stdio [Model Context Protocol (MCP)] servers:
 
 | Server | Purpose | Runtime |
 | --- | --- | --- |
@@ -8,6 +8,7 @@
 | `dotmcp-io` | List, read, search, and edit files. | Python / FastMCP |
 | `dotmcp-fetch` | Fetch web content and query a SearXNG instance. | Python / FastMCP |
 | `dotmcp-terminal` | Execute commands through the host-native shell. | Python / FastMCP |
+| `dotmcp-caldav` | Connect to arbitrary CalDAV servers using credentials supplied to each tool call. | Python / FastMCP |
 
 ## Quick start (Linux/macOS)
 
@@ -30,6 +31,7 @@ bash ./install.sh
 - `DotMcp.IO/requirements.txt`
 - `DotMcp.Fetch/requirements.txt`
 - `DotMcp.Terminal/requirements.txt`
+- `DotMcp.Caldav/requirements.txt`
 
 Set `PYTHON_BIN` when Python 3.10+ is not exposed as one of the usual `python3` commands:
 
@@ -39,11 +41,11 @@ PYTHON_BIN=/path/to/python3.12 bash ./install.sh
 
 ## Configure your MCP harness
 
-Load the repository-root [`mcp.json`](./mcp.json) in your MCP harness. It defines all four servers and runs them over standard input/output.
+Load the repository-root [`mcp.json`](./mcp.json) in your MCP harness. It defines all five servers and runs them over standard input/output.
 
 The paths in `mcp.json` are relative to the repository root, and each entry sets `cwd` to `.`. Configure the harness to start these entries from the cloned repository directory, or replace `cwd` and the relative paths with that clone’s absolute path if the harness does not resolve configuration-relative paths.
 
-The Assembly entry uses `dotnet run`, so its first launch restores and builds the .NET project. The three Python entries run through `.venv/bin/python`, which is created by `install.sh`.
+The Assembly entry uses `dotnet run`, so its first launch restores and builds the .NET project. The four Python entries run through `.venv/bin/python`, which is created by `install.sh`.
 
 ## Fetch server configuration
 
@@ -58,6 +60,19 @@ The Assembly entry uses `dotnet run`, so its first launch restores and builds th
 | `MAX_URLS` | `3` | Maximum URLs accepted by one `Fetch` call. |
 | `DELAY_BETWEEN_REQUESTS` | `0.5` | Delay between sequential fetches, in seconds. |
 | `MAX_SEARCH_RESULTS` | `10` | Upper bound for results returned by `Search`. |
+
+## CalDAV server configuration
+
+`dotmcp-caldav` is a general connector for CalDAV servers. Every CalDAV tool call requires `serverUrl`, `username`, and `password`; the server creates a new client for that call, closes it afterward, and never reads or persists credentials from `mcp.json`, environment variables, or files. Start with `CheckCalDAVConnection`, use `ListCalendars` to obtain a calendar URL, then search, retrieve, create, update, or delete VEVENT, VTODO, and VJOURNAL objects. Calendar and object URLs must use the same origin as `serverUrl`; use the server's canonical endpoint because redirects are rejected.
+
+HTTPS endpoints are required by default. TLS certificate verification is enabled by default through `verifySsl`; disable it only for a known self-signed server. For a trusted legacy or local HTTP endpoint, explicitly set `allowInsecureHttp` to `true` on every relevant tool call. The optional harness environment variables control non-secret limits:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CALDAV_REQUEST_TIMEOUT` | `30` | Per-request timeout in seconds. |
+| `CALDAV_MAX_RESULTS` | `100` | Maximum results returned by `SearchCalendarObjects`. |
+| `CALDAV_MAX_SEARCH_DAYS` | `366` | Maximum closed date range accepted by `SearchCalendarObjects`. |
+| `CALDAV_SEARCH_WINDOW_DAYS` | `7` | Largest date window fetched per search request; searching stops once `maxResults` is reached. |
 
 ## Notes
 

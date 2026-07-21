@@ -25,6 +25,11 @@
       "command": ".venv/bin/python",
       "args": ["DotMcp.Terminal/server.py"],
       "cwd": "."
+    },
+    "dotmcp-caldav": {
+      "command": ".venv/bin/python",
+      "args": ["DotMcp.Caldav/server.py"],
+      "cwd": "."
     }
   }
 }
