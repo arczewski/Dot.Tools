@@ -223,8 +223,9 @@ def search_in_directory(
     ignoreFolders: list[str] | None = None,
     includeExtensions: list[str] | None = None,
     maxDepth: int = -1,
+    includeAdditionalLines: int = 0,
 ) -> str:
-    """Search a directory tree using a regular expression, with folder and extension filters."""
+    """Search a directory tree with optional numbered context above and below every matched line."""
     root = _directory(directoryPath)
     if not root.is_dir():
         return f"Error: Directory not found: {directoryPath}"
@@ -255,11 +256,23 @@ def search_in_directory(
             if not matches:
                 continue
             output.append(f"File: {file}")
-            output.extend(
-                f"  -> ({line}, {column})"
-                for match in matches
-                for line, column in [_line_and_column(content, match.start())]
-            )
+            if includeAdditionalLines <= 0:
+                output.extend(
+                    f"  -> ({line}, {column})"
+                    for match in matches
+                    for line, column in [_line_and_column(content, match.start())]
+                )
+            else:
+                file_lines = content.splitlines()
+                for match in matches:
+                    line, column = _line_and_column(content, match.start())
+                    output.append(f"  -> ({line}, {column})")
+                    first_context_line = max(1, line - includeAdditionalLines)
+                    last_context_line = min(len(file_lines), line + includeAdditionalLines)
+                    output.extend(
+                        f"     {'>' if line_number == line else ' '} {line_number}: {file_lines[line_number - 1]}"
+                        for line_number in range(first_context_line, last_context_line + 1)
+                    )
             output.append("")
         return os.linesep.join(output).rstrip() if output else "No matches found."
     except Exception as error:  # pragma: no cover - platform/filesystem failure
