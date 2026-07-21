@@ -2,6 +2,46 @@
 
 A Model Context Protocol (MCP) server that provides tools for inspecting .NET assemblies and providing IntelliSense-style code completion using Microsoft Roslyn.
 
+## Run as a Docker MCP server
+
+The container intentionally uses the .NET SDK image at runtime because the project-aware Roslyn tools need MSBuild. The server communicates over standard input/output, so keep Docker in interactive mode and mount every host directory containing assemblies or projects you want to inspect.
+
+Build locally from this directory:
+
+```bash
+docker build --tag dotmcp-assembly .
+```
+
+A manual smoke run will wait for MCP input, which is expected:
+
+```bash
+docker run --rm -i \
+  --volume "/absolute/path/to/assemblies:/workspace:ro" \
+  dotmcp-assembly
+```
+
+To configure an MCP client after a tagged release, use the published image and reference mounted files by their **container** paths (for example, `/workspace/MyLibrary.dll`):
+
+```json
+{
+  "mcpServers": {
+    "dotmcp-assembly": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--volume",
+        "/absolute/path/to/assemblies:/workspace:ro",
+        "ghcr.io/arczewski/dot-tools-assembly:v1.0.0"
+      ]
+    }
+  }
+}
+```
+
+Use a release tag that exists instead of `v1.0.0`. Remove `:ro` only when an Assembly tool must read a mounted project and write within that mount. On Docker Desktop for Windows, use a Docker-supported absolute mount path such as `C:/work/assemblies:/workspace:ro`.
+
 ## Available Tools
 
 ### 1. BrowseAssembly
