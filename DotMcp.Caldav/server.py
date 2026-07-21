@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -14,7 +14,6 @@ import caldav
 from caldav.calendarobjectresource import CalendarObjectResource
 from caldav.collection import Calendar
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_http_request
 from icalendar import Calendar as ICalendar
 
 mcp = FastMCP("DotMcp.Caldav")
@@ -36,45 +35,37 @@ _COMPONENT_METHODS = {
     "VTODO": "add_todo",
     "VJOURNAL": "add_journal",
 }
-_CALDAV_URL_HEADER = "X-CalDAV-URL"
-_CALDAV_USERNAME_HEADER = "X-CalDAV-Username"
-_CALDAV_PASSWORD_HEADER = "X-CalDAV-Password"
+_CALDAV_URL_ENV = "CALDAV_URL"
+_CALDAV_USERNAME_ENV = "CALDAV_USERNAME"
+_CALDAV_PASSWORD_ENV = "CALDAV_PASSWORD"
 
 
 @dataclass(frozen=True)
 class CalDAVConnection:
-    """Per-request CalDAV connection data obtained from HTTP headers."""
+    """CalDAV connection data read from the MCP server process environment."""
 
     server_url: str
     username: str
     password: str
 
 
-def _connection_from_headers(headers: Mapping[str, str]) -> CalDAVConnection:
+def _connection_from_environment() -> CalDAVConnection:
     values = {
-        _CALDAV_URL_HEADER: headers.get(_CALDAV_URL_HEADER),
-        _CALDAV_USERNAME_HEADER: headers.get(_CALDAV_USERNAME_HEADER),
-        _CALDAV_PASSWORD_HEADER: headers.get(_CALDAV_PASSWORD_HEADER),
+        _CALDAV_URL_ENV: os.getenv(_CALDAV_URL_ENV),
+        _CALDAV_USERNAME_ENV: os.getenv(_CALDAV_USERNAME_ENV),
+        _CALDAV_PASSWORD_ENV: os.getenv(_CALDAV_PASSWORD_ENV),
     }
-    missing_headers = [name for name, value in values.items() if not value]
-    if missing_headers:
-        raise ValueError(f"Missing required CalDAV request header(s): {', '.join(missing_headers)}.")
+    missing_variables = [name for name, value in values.items() if not value]
+    if missing_variables:
+        raise ValueError(
+            f"Missing required CalDAV environment variable(s): {', '.join(missing_variables)}."
+        )
 
     return CalDAVConnection(
-        server_url=values[_CALDAV_URL_HEADER],
-        username=values[_CALDAV_USERNAME_HEADER],
-        password=values[_CALDAV_PASSWORD_HEADER],
+        server_url=values[_CALDAV_URL_ENV],
+        username=values[_CALDAV_USERNAME_ENV],
+        password=values[_CALDAV_PASSWORD_ENV],
     )
-
-
-def _connection_from_request_headers() -> CalDAVConnection:
-    try:
-        request = get_http_request()
-    except RuntimeError as error:
-        raise RuntimeError(
-            "CalDAV connection headers are available only through an HTTP MCP transport."
-        ) from error
-    return _connection_from_headers(request.headers)
 
 
 def _validate_url(value: str, parameter_name: str, allow_insecure_http: bool = False) -> None:
@@ -87,7 +78,7 @@ def _validate_url(value: str, parameter_name: str, allow_insecure_http: bool = F
         )
     if parsed.username or parsed.password:
         raise ValueError(
-            f"{parameter_name} must not contain credentials; pass username and password separately."
+            f"{parameter_name} must not contain credentials; set CALDAV_USERNAME and CALDAV_PASSWORD separately."
         )
     try:
         _ = parsed.port
@@ -188,7 +179,7 @@ def _ensure_success(response: Any, operation: str) -> None:
 
 
 def _error_result(error: Exception, connection: CalDAVConnection | None = None) -> dict[str, str]:
-    """Return a useful failure without reflecting request-supplied credentials."""
+    """Return a useful failure without reflecting environment-supplied credentials."""
     detail = str(error).strip()
     if connection is not None:
         for secret in (connection.password, connection.username):
@@ -207,7 +198,7 @@ def _client(
     verify_ssl: bool,
     allow_insecure_http: bool,
 ) -> Iterator[caldav.DAVClient]:
-    _validate_url(server_url, _CALDAV_URL_HEADER, allow_insecure_http)
+    _validate_url(server_url, _CALDAV_URL_ENV, allow_insecure_http)
     if not username:
         raise ValueError("username is required.")
     if not password:
@@ -328,14 +319,14 @@ def check_caldav_connection(
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, Any]:
-    """Verify the CalDAV login supplied in the request headers.
+    """Verify the CalDAV login supplied through environment variables.
 
-    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers. Header values are used
-    for this request only and are never stored by this MCP server.
+    Requires CALDAV_URL, CALDAV_USERNAME, and CALDAV_PASSWORD. Values are read from the MCP server
+    process environment and are never stored by this MCP server.
     """
     connection: CalDAVConnection | None = None
     try:
-        connection = _connection_from_request_headers()
+        connection = _connection_from_environment()
         with _client(
             connection.server_url,
             connection.username,
@@ -357,14 +348,14 @@ def list_calendars(
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> list[dict[str, Any]] | dict[str, str]:
-    """List calendars for the CalDAV login supplied in the request headers.
+    """List calendars for the CalDAV login supplied through environment variables.
 
-    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers. Header values are used
-    for this request only and are never stored by this MCP server.
+    Requires CALDAV_URL, CALDAV_USERNAME, and CALDAV_PASSWORD. Values are read from the MCP server
+    process environment and are never stored by this MCP server.
     """
     connection: CalDAVConnection | None = None
     try:
-        connection = _connection_from_request_headers()
+        connection = _connection_from_environment()
         with _client(
             connection.server_url,
             connection.username,
@@ -387,14 +378,14 @@ def create_calendar(
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, Any]:
-    """Create a calendar owned by the user identified by the request headers.
+    """Create a calendar owned by the user identified through environment variables.
 
     Set supportedComponents, such as ["VTODO"], only when a server needs an explicit component set.
-    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers.
+    Requires CALDAV_URL, CALDAV_USERNAME, and CALDAV_PASSWORD.
     """
     connection: CalDAVConnection | None = None
     try:
-        connection = _connection_from_request_headers()
+        connection = _connection_from_environment()
         with _client(
             connection.server_url,
             connection.username,
@@ -425,14 +416,14 @@ def search_calendar_objects(
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> list[dict[str, Any]] | dict[str, str]:
-    """Search VEVENT, VTODO, or VJOURNAL objects using the CalDAV request headers.
+    """Search VEVENT, VTODO, or VJOURNAL objects using the CalDAV environment configuration.
 
-    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers. start and end are
-    required ISO 8601 dates or date-times and must fit within the configured range.
+    Requires CALDAV_URL, CALDAV_USERNAME, and CALDAV_PASSWORD. start and end are required ISO 8601
+    dates or date-times and must fit within the configured range.
     """
     connection: CalDAVConnection | None = None
     try:
-        connection = _connection_from_request_headers()
+        connection = _connection_from_environment()
         component_type = _component_type(componentType)
         if maxResults < 1:
             raise ValueError("maxResults must be at least 1.")
@@ -485,13 +476,13 @@ def get_calendar_object(
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, Any]:
-    """Retrieve one calendar object by URL using the CalDAV request headers.
+    """Retrieve one calendar object by URL using the CalDAV environment configuration.
 
-    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers.
+    Requires CALDAV_URL, CALDAV_USERNAME, and CALDAV_PASSWORD.
     """
     connection: CalDAVConnection | None = None
     try:
-        connection = _connection_from_request_headers()
+        connection = _connection_from_environment()
         _validate_resource_url(objectUrl, "objectUrl", connection.server_url, allowInsecureHttp)
         with _client(
             connection.server_url,
@@ -516,14 +507,14 @@ def create_calendar_object(
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, Any]:
-    """Create a VEVENT, VTODO, or VJOURNAL using the CalDAV request headers.
+    """Create a VEVENT, VTODO, or VJOURNAL using the CalDAV environment configuration.
 
     All non-timezone calendar components must match componentType and share one UID. Requires
-    X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers.
+    CALDAV_URL, CALDAV_USERNAME, and CALDAV_PASSWORD.
     """
     connection: CalDAVConnection | None = None
     try:
-        connection = _connection_from_request_headers()
+        connection = _connection_from_environment()
         component_type = _component_type(componentType)
         _validate_icalendar_data(icalendarData, component_type)
 
@@ -549,14 +540,14 @@ def update_calendar_object(
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, str]:
-    """Replace one calendar object's raw iCalendar data using the CalDAV request headers.
+    """Replace one calendar object's raw iCalendar data using the CalDAV environment configuration.
 
-    Preserve the calendar object's UID and component type when updating. Requires X-CalDAV-URL,
-    X-CalDAV-Username, and X-CalDAV-Password headers.
+    Preserve the calendar object's UID and component type when updating. Requires CALDAV_URL,
+    CALDAV_USERNAME, and CALDAV_PASSWORD.
     """
     connection: CalDAVConnection | None = None
     try:
-        connection = _connection_from_request_headers()
+        connection = _connection_from_environment()
         _validate_resource_url(objectUrl, "objectUrl", connection.server_url, allowInsecureHttp)
         _validate_icalendar_data(icalendarData)
 
@@ -584,13 +575,13 @@ def delete_calendar_object(
     verifySsl: bool = True,
     allowInsecureHttp: bool = False,
 ) -> dict[str, str]:
-    """Delete one calendar object by URL using the CalDAV request headers.
+    """Delete one calendar object by URL using the CalDAV environment configuration.
 
-    Requires X-CalDAV-URL, X-CalDAV-Username, and X-CalDAV-Password headers.
+    Requires CALDAV_URL, CALDAV_USERNAME, and CALDAV_PASSWORD.
     """
     connection: CalDAVConnection | None = None
     try:
-        connection = _connection_from_request_headers()
+        connection = _connection_from_environment()
         _validate_resource_url(objectUrl, "objectUrl", connection.server_url, allowInsecureHttp)
         with _client(
             connection.server_url,
@@ -606,21 +597,5 @@ def delete_calendar_object(
         return _error_result(error, connection)
 
 
-def _run_server() -> None:
-    transport = os.getenv("MCP_TRANSPORT", "stdio")
-    if transport == "stdio":
-        mcp.run(transport=transport)
-        return
-    if transport not in {"http", "sse", "streamable-http"}:
-        raise ValueError("MCP_TRANSPORT must be stdio, http, sse, or streamable-http.")
-
-    mcp.run(
-        transport=transport,
-        host=os.getenv("MCP_HOST", "127.0.0.1"),
-        port=_int_env("MCP_PORT", 8000),
-        path=os.getenv("MCP_PATH", "/mcp"),
-    )
-
-
 if __name__ == "__main__":
-    _run_server()
+    mcp.run()
